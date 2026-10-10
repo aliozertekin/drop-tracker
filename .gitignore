@@ -1,0 +1,14 @@
+# Gradle/build output
+.gradle/
+build/
+out/
+*.tmp
+
+# IDE files
+*.iml
+.idea/
+.vscode/
+
+# OS metadata
+.DS_Store
+Thumbs.db
