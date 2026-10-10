@@ -43,7 +43,7 @@ import net.runelite.client.util.ImageUtil;
     name = "Drop Tracker",
     description = "Tracks cumulative quantities, Grand Exchange value, and high-alchemy value for items you drop",
     tags = {"drop", "items", "uim", "value", "history", "high-alchemy", "grand-exchange"},
-    internalName = "drop_tracker",
+    internalName = "drop-tracker",
     legacyDataDirectory = "drop-tracker"
 )
 public class DropTrackerPlugin extends Plugin
