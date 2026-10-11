@@ -176,7 +176,7 @@ public class DropTrackerPlugin extends Plugin
             }
             catch (InterruptedException e)
             {
-                Thread.currentThread().interrupt();
+                // Plugin Hub rules disallow Thread.interrupt(); just stop the executor.
                 persistenceExecutor.shutdownNow();
             }
             persistenceExecutor = null;
