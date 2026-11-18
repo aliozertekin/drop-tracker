@@ -153,6 +153,13 @@ public final class DropRecord
             getTotalValue(), multiplySaturated(quantity, safePrice));
     }
 
+    /** Copy of this record under a different item ID/name (used to merge noted and clue-step variants). */
+    public DropRecord withItemId(int newItemId, String newName)
+    {
+        return new DropRecord(newItemId, newName == null || newName.trim().isEmpty() ? getItemName() : newName,
+            quantity, unitPrice, highAlchPrice, timestamp, getTotalValue(), getTotalHighAlchValue());
+    }
+
     public boolean isValid()
     {
         return itemId > 0 && itemName != null && !itemName.trim().isEmpty()

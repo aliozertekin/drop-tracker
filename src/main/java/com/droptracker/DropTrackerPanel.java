@@ -111,7 +111,7 @@ public final class DropTrackerPanel extends PluginPanel
         header.setBorder(BorderFactory.createEmptyBorder(0, 0, 4, 0));
         add(header, BorderLayout.NORTH);
 
-        JPanel controls = new JPanel(new GridLayout(0, 2, 4, 4));
+        JPanel controls = new JPanel(new GridLayout(0, 1, 0, 4));
         controls.setBorder(BorderFactory.createEmptyBorder(0, 0, 4, 0));
         JButton exportButton = new JButton("Export JSON…");
         exportButton.addActionListener(e -> chooseExportFile());
@@ -124,10 +124,21 @@ public final class DropTrackerPanel extends PluginPanel
         ignoreButton.addActionListener(e -> ignoreSelectedItem());
         JButton clearButton = new JButton("Delete all history");
         clearButton.addActionListener(e -> confirmClear());
-        controls.add(new JLabel("Sort:"));
-        controls.add(sortOrder);
-        controls.add(exportButton);
-        controls.add(importButton);
+        java.awt.Insets compact = new java.awt.Insets(2, 4, 2, 4);
+        for (JButton button : new JButton[] {exportButton, importButton, removeButton, ignoreButton, clearButton})
+        {
+            button.setMargin(compact);
+            button.setFocusPainted(false);
+        }
+
+        JPanel sortRow = new JPanel(new BorderLayout(6, 0));
+        sortRow.add(new JLabel("Sort:"), BorderLayout.WEST);
+        sortRow.add(sortOrder, BorderLayout.CENTER);
+        JPanel ioRow = new JPanel(new GridLayout(1, 2, 4, 0));
+        ioRow.add(exportButton);
+        ioRow.add(importButton);
+        controls.add(sortRow);
+        controls.add(ioRow);
         controls.add(removeButton);
         controls.add(ignoreButton);
         controls.add(clearButton);

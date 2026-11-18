@@ -72,4 +72,21 @@ public class DropHistoryAggregatorTest
         Assert.assertEquals("Old logs name", result.get(0).getItemName());
         Assert.assertEquals(newer, result.get(0).getTimestamp());
     }
+
+    @Test
+    public void remappedNotedRecordMergesWithoutLosingQuantityOrValue()
+    {
+        long t1 = Instant.parse("2026-03-01T10:00:00Z").toEpochMilli();
+        long t2 = Instant.parse("2026-03-02T10:00:00Z").toEpochMilli();
+        DropRecord regular = new DropRecord(1513, "Magic logs", 10, 1000, 0, t1);
+        DropRecord noted = new DropRecord(1514, "Magic logs", 90, 1000, 0, t2).withItemId(1513, "Magic logs");
+
+        List<DropRecord> result = DropHistoryAggregator.aggregateByItem(Arrays.asList(regular, noted));
+
+        Assert.assertEquals(1, result.size());
+        Assert.assertEquals(1513, result.get(0).getItemId());
+        Assert.assertEquals(100L, result.get(0).getQuantity());
+        Assert.assertEquals(100000L, result.get(0).getTotalValue());
+        Assert.assertEquals(t2, result.get(0).getTimestamp());
+    }
 }

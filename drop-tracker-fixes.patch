@@ -1,0 +1,282 @@
+diff --git a/src/main/java/com/droptracker/DropHistoryStore.java b/src/main/java/com/droptracker/DropHistoryStore.java
+index 44d673e..014f727 100644
+--- a/src/main/java/com/droptracker/DropHistoryStore.java
++++ b/src/main/java/com/droptracker/DropHistoryStore.java
+@@ -166,6 +166,27 @@ public final class DropHistoryStore
+         return result;
+     }
+ 
++    /**
++     * Copy the current history file to a one-time backup before a data migration rewrites it.
++     * Never overwrites an existing backup, so the user's original data is always preserved.
++     *
++     * @return true if a backup exists (already or newly created) or there was nothing to back up
++     */
++    public synchronized boolean backupBeforeMigration() throws IOException
++    {
++        if (!file.exists())
++        {
++            return true;
++        }
++        Filepath backup = directory.joinSegment(file.getFileName() + ".pre-merge-backup");
++        if (backup.exists())
++        {
++            return true;
++        }
++        file.copyTo(backup);
++        return true;
++    }
++
+     public synchronized void save(List<DropRecord> records) throws IOException
+     {
+         directory.createDirectories();
+diff --git a/src/main/java/com/droptracker/DropRecord.java b/src/main/java/com/droptracker/DropRecord.java
+index c2fac69..10aa285 100644
+--- a/src/main/java/com/droptracker/DropRecord.java
++++ b/src/main/java/com/droptracker/DropRecord.java
+@@ -153,6 +153,13 @@ public final class DropRecord
+             getTotalValue(), multiplySaturated(quantity, safePrice));
+     }
+ 
++    /** Copy of this record under a different item ID/name (used to merge noted and clue-step variants). */
++    public DropRecord withItemId(int newItemId, String newName)
++    {
++        return new DropRecord(newItemId, newName == null || newName.trim().isEmpty() ? getItemName() : newName,
++            quantity, unitPrice, highAlchPrice, timestamp, getTotalValue(), getTotalHighAlchValue());
++    }
++
+     public boolean isValid()
+     {
+         return itemId > 0 && itemName != null && !itemName.trim().isEmpty()
+diff --git a/src/main/java/com/droptracker/DropTrackerPanel.java b/src/main/java/com/droptracker/DropTrackerPanel.java
+index 9c993a4..71afd78 100644
+--- a/src/main/java/com/droptracker/DropTrackerPanel.java
++++ b/src/main/java/com/droptracker/DropTrackerPanel.java
+@@ -111,7 +111,7 @@ public final class DropTrackerPanel extends PluginPanel
+         header.setBorder(BorderFactory.createEmptyBorder(0, 0, 4, 0));
+         add(header, BorderLayout.NORTH);
+ 
+-        JPanel controls = new JPanel(new GridLayout(0, 2, 4, 4));
++        JPanel controls = new JPanel(new GridLayout(0, 1, 0, 4));
+         controls.setBorder(BorderFactory.createEmptyBorder(0, 0, 4, 0));
+         JButton exportButton = new JButton("Export JSON…");
+         exportButton.addActionListener(e -> chooseExportFile());
+@@ -124,10 +124,21 @@ public final class DropTrackerPanel extends PluginPanel
+         ignoreButton.addActionListener(e -> ignoreSelectedItem());
+         JButton clearButton = new JButton("Delete all history");
+         clearButton.addActionListener(e -> confirmClear());
+-        controls.add(new JLabel("Sort:"));
+-        controls.add(sortOrder);
+-        controls.add(exportButton);
+-        controls.add(importButton);
++        java.awt.Insets compact = new java.awt.Insets(2, 4, 2, 4);
++        for (JButton button : new JButton[] {exportButton, importButton, removeButton, ignoreButton, clearButton})
++        {
++            button.setMargin(compact);
++            button.setFocusPainted(false);
++        }
++
++        JPanel sortRow = new JPanel(new BorderLayout(6, 0));
++        sortRow.add(new JLabel("Sort:"), BorderLayout.WEST);
++        sortRow.add(sortOrder, BorderLayout.CENTER);
++        JPanel ioRow = new JPanel(new GridLayout(1, 2, 4, 0));
++        ioRow.add(exportButton);
++        ioRow.add(importButton);
++        controls.add(sortRow);
++        controls.add(ioRow);
+         controls.add(removeButton);
+         controls.add(ignoreButton);
+         controls.add(clearButton);
+diff --git a/src/main/java/com/droptracker/DropTrackerPlugin.java b/src/main/java/com/droptracker/DropTrackerPlugin.java
+index 815d75e..58c93a8 100644
+--- a/src/main/java/com/droptracker/DropTrackerPlugin.java
++++ b/src/main/java/com/droptracker/DropTrackerPlugin.java
+@@ -236,8 +236,9 @@ public class DropTrackerPlugin extends Plugin
+             return;
+         }
+ 
+-        int itemId = item.getId();
+-        if (isIgnoredItem(itemId))
++        int rawItemId = item.getId();
++        int itemId = canonicalItemId(rawItemId);
++        if (isIgnoredItem(rawItemId) || isIgnoredItem(itemId))
+         {
+             return;
+         }
+@@ -365,9 +366,132 @@ public class DropTrackerPlugin extends Plugin
+         }
+     }
+ 
++
++    /**
++     * Collapse equivalent item IDs into one: noted items map to their unnoted item, and every clue scroll
++     * step of a tier maps to a single per-tier clue scroll. Must be called on the client thread.
++     */
++    private int canonicalItemId(int itemId)
++    {
++        try
++        {
++            net.runelite.api.ItemComposition composition = itemManager.getItemComposition(itemId);
++            int clueId = clueTierItemId(composition.getName());
++            if (clueId > 0)
++            {
++                return clueId;
++            }
++            if (composition.getNote() != -1 && composition.getLinkedNoteId() > 0)
++            {
++                return composition.getLinkedNoteId();
++            }
++        }
++        catch (RuntimeException e)
++        {
++            LOGGER.log(Level.FINE, "Could not canonicalize item " + itemId, e);
++        }
++        return itemId;
++    }
++
++    private static int clueTierItemId(String name)
++    {
++        if (name == null)
++        {
++            return -1;
++        }
++        String lower = name.trim().toLowerCase(java.util.Locale.ROOT);
++        if (!lower.startsWith("clue scroll ("))
++        {
++            return -1;
++        }
++        if (lower.startsWith("clue scroll (beginner)")) return 23182;
++        if (lower.startsWith("clue scroll (easy)")) return 2677;
++        if (lower.startsWith("clue scroll (medium)")) return 2801;
++        if (lower.startsWith("clue scroll (hard)")) return 2722;
++        if (lower.startsWith("clue scroll (elite)")) return 12073;
++        if (lower.startsWith("clue scroll (master)")) return 19835;
++        return -1;
++    }
++
++    /**
++     * Re-key existing history (noted items, clue steps) to canonical IDs. Client thread only.
++     * Safe by design: skipped if history could not be loaded, a one-time backup of the original file is
++     * made first, totals are verified before applying, and any failure leaves history untouched.
++     */
++    private void migrateHistoryToCanonicalIds()
++    {
++        if (!persistenceAvailable || historyStore == null)
++        {
++            return;
++        }
++        boolean changed = false;
++        synchronized (historyLock)
++        {
++            List<DropRecord> remapped = new ArrayList<>(history.size());
++            boolean needsMigration = false;
++            long quantityBefore = 0L;
++            for (DropRecord record : history)
++            {
++                quantityBefore = Math.max(0L, quantityBefore) + record.getQuantity();
++                int canonical = canonicalItemId(record.getItemId());
++                if (canonical != record.getItemId())
++                {
++                    String name = record.getItemName();
++                    try
++                    {
++                        name = itemManager.getItemComposition(canonical).getName();
++                    }
++                    catch (RuntimeException ignored)
++                    {
++                        // keep the stored name
++                    }
++                    record = record.withItemId(canonical, name);
++                    needsMigration = true;
++                }
++                remapped.add(record);
++            }
++            if (needsMigration)
++            {
++                List<DropRecord> aggregated = DropHistoryAggregator.aggregateByItem(remapped);
++                long quantityAfter = 0L;
++                for (DropRecord record : aggregated)
++                {
++                    quantityAfter += record.getQuantity();
++                }
++                // Merging must never lose or invent items; abort (and keep history as-is) if totals differ.
++                if (quantityAfter != quantityBefore || aggregated.size() > history.size())
++                {
++                    LOGGER.log(Level.WARNING, "Drop Tracker migration skipped: totals did not match.");
++                    return;
++                }
++                try
++                {
++                    historyStore.backupBeforeMigration();
++                }
++                catch (IOException | RuntimeException e)
++                {
++                    LOGGER.log(Level.WARNING, "Drop Tracker migration skipped: could not back up history.", e);
++                    return;
++                }
++                history.clear();
++                history.addAll(aggregated);
++                changed = true;
++            }
++        }
++        if (changed)
++        {
++            persistAsync();
++            if (panel != null)
++            {
++                panel.refresh();
++            }
++        }
++    }
++
+     /** Refresh high-alchemy values for existing rows on the client thread, preserving captured GE totals. */
+     private void refreshHistoryHighAlchPrices()
+     {
++        migrateHistoryToCanonicalIds();
+         boolean changed = false;
+         synchronized (historyLock)
+         {
+@@ -422,7 +546,7 @@ public class DropTrackerPlugin extends Plugin
+         return left > Long.MAX_VALUE / right ? Long.MAX_VALUE : left * right;
+     }
+ 
+-    private static Map<Integer, Integer> inventoryCounts(ItemContainer container)
++    private Map<Integer, Integer> inventoryCounts(ItemContainer container)
+     {
+         Map<Integer, Integer> counts = new HashMap<>();
+         if (container == null || container.getItems() == null)
+@@ -435,7 +559,7 @@ public class DropTrackerPlugin extends Plugin
+             {
+                 continue;
+             }
+-            counts.merge(item.getId(), item.getQuantity(), (left, right) -> {
++            counts.merge(canonicalItemId(item.getId()), item.getQuantity(), (left, right) -> {
+                 long total = (long) left + right;
+                 return total > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) total;
+             });
+diff --git a/src/test/java/com/droptracker/DropHistoryAggregatorTest.java b/src/test/java/com/droptracker/DropHistoryAggregatorTest.java
+index 076b39f..9236371 100644
+--- a/src/test/java/com/droptracker/DropHistoryAggregatorTest.java
++++ b/src/test/java/com/droptracker/DropHistoryAggregatorTest.java
+@@ -72,4 +72,21 @@ public class DropHistoryAggregatorTest
+         Assert.assertEquals("Old logs name", result.get(0).getItemName());
+         Assert.assertEquals(newer, result.get(0).getTimestamp());
+     }
++
++    @Test
++    public void remappedNotedRecordMergesWithoutLosingQuantityOrValue()
++    {
++        long t1 = Instant.parse("2026-03-01T10:00:00Z").toEpochMilli();
++        long t2 = Instant.parse("2026-03-02T10:00:00Z").toEpochMilli();
++        DropRecord regular = new DropRecord(1513, "Magic logs", 10, 1000, 0, t1);
++        DropRecord noted = new DropRecord(1514, "Magic logs", 90, 1000, 0, t2).withItemId(1513, "Magic logs");
++
++        List<DropRecord> result = DropHistoryAggregator.aggregateByItem(Arrays.asList(regular, noted));
++
++        Assert.assertEquals(1, result.size());
++        Assert.assertEquals(1513, result.get(0).getItemId());
++        Assert.assertEquals(100L, result.get(0).getQuantity());
++        Assert.assertEquals(100000L, result.get(0).getTotalValue());
++        Assert.assertEquals(t2, result.get(0).getTimestamp());
++    }
+ }

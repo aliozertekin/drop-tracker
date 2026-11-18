@@ -166,6 +166,27 @@ public final class DropHistoryStore
         return result;
     }
 
+    /**
+     * Copy the current history file to a one-time backup before a data migration rewrites it.
+     * Never overwrites an existing backup, so the user's original data is always preserved.
+     *
+     * @return true if a backup exists (already or newly created) or there was nothing to back up
+     */
+    public synchronized boolean backupBeforeMigration() throws IOException
+    {
+        if (!file.exists())
+        {
+            return true;
+        }
+        Filepath backup = directory.joinSegment(file.getFileName() + ".pre-merge-backup");
+        if (backup.exists())
+        {
+            return true;
+        }
+        file.copyTo(backup);
+        return true;
+    }
+
     public synchronized void save(List<DropRecord> records) throws IOException
     {
         directory.createDirectories();

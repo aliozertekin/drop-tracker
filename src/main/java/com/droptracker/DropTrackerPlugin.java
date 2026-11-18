@@ -236,8 +236,9 @@ public class DropTrackerPlugin extends Plugin
             return;
         }
 
-        int itemId = item.getId();
-        if (isIgnoredItem(itemId))
+        int rawItemId = item.getId();
+        int itemId = canonicalItemId(rawItemId);
+        if (isIgnoredItem(rawItemId) || isIgnoredItem(itemId))
         {
             return;
         }
@@ -365,9 +366,132 @@ public class DropTrackerPlugin extends Plugin
         }
     }
 
+
+    /**
+     * Collapse equivalent item IDs into one: noted items map to their unnoted item, and every clue scroll
+     * step of a tier maps to a single per-tier clue scroll. Must be called on the client thread.
+     */
+    private int canonicalItemId(int itemId)
+    {
+        try
+        {
+            net.runelite.api.ItemComposition composition = itemManager.getItemComposition(itemId);
+            int clueId = clueTierItemId(composition.getName());
+            if (clueId > 0)
+            {
+                return clueId;
+            }
+            if (composition.getNote() != -1 && composition.getLinkedNoteId() > 0)
+            {
+                return composition.getLinkedNoteId();
+            }
+        }
+        catch (RuntimeException e)
+        {
+            LOGGER.log(Level.FINE, "Could not canonicalize item " + itemId, e);
+        }
+        return itemId;
+    }
+
+    private static int clueTierItemId(String name)
+    {
+        if (name == null)
+        {
+            return -1;
+        }
+        String lower = name.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!lower.startsWith("clue scroll ("))
+        {
+            return -1;
+        }
+        if (lower.startsWith("clue scroll (beginner)")) return 23182;
+        if (lower.startsWith("clue scroll (easy)")) return 2677;
+        if (lower.startsWith("clue scroll (medium)")) return 2801;
+        if (lower.startsWith("clue scroll (hard)")) return 2722;
+        if (lower.startsWith("clue scroll (elite)")) return 12073;
+        if (lower.startsWith("clue scroll (master)")) return 19835;
+        return -1;
+    }
+
+    /**
+     * Re-key existing history (noted items, clue steps) to canonical IDs. Client thread only.
+     * Safe by design: skipped if history could not be loaded, a one-time backup of the original file is
+     * made first, totals are verified before applying, and any failure leaves history untouched.
+     */
+    private void migrateHistoryToCanonicalIds()
+    {
+        if (!persistenceAvailable || historyStore == null)
+        {
+            return;
+        }
+        boolean changed = false;
+        synchronized (historyLock)
+        {
+            List<DropRecord> remapped = new ArrayList<>(history.size());
+            boolean needsMigration = false;
+            long quantityBefore = 0L;
+            for (DropRecord record : history)
+            {
+                quantityBefore = Math.max(0L, quantityBefore) + record.getQuantity();
+                int canonical = canonicalItemId(record.getItemId());
+                if (canonical != record.getItemId())
+                {
+                    String name = record.getItemName();
+                    try
+                    {
+                        name = itemManager.getItemComposition(canonical).getName();
+                    }
+                    catch (RuntimeException ignored)
+                    {
+                        // keep the stored name
+                    }
+                    record = record.withItemId(canonical, name);
+                    needsMigration = true;
+                }
+                remapped.add(record);
+            }
+            if (needsMigration)
+            {
+                List<DropRecord> aggregated = DropHistoryAggregator.aggregateByItem(remapped);
+                long quantityAfter = 0L;
+                for (DropRecord record : aggregated)
+                {
+                    quantityAfter += record.getQuantity();
+                }
+                // Merging must never lose or invent items; abort (and keep history as-is) if totals differ.
+                if (quantityAfter != quantityBefore || aggregated.size() > history.size())
+                {
+                    LOGGER.log(Level.WARNING, "Drop Tracker migration skipped: totals did not match.");
+                    return;
+                }
+                try
+                {
+                    historyStore.backupBeforeMigration();
+                }
+                catch (IOException | RuntimeException e)
+                {
+                    LOGGER.log(Level.WARNING, "Drop Tracker migration skipped: could not back up history.", e);
+                    return;
+                }
+                history.clear();
+                history.addAll(aggregated);
+                changed = true;
+            }
+        }
+        if (changed)
+        {
+            persistAsync();
+            if (panel != null)
+            {
+                panel.refresh();
+            }
+        }
+    }
+
     /** Refresh high-alchemy values for existing rows on the client thread, preserving captured GE totals. */
     private void refreshHistoryHighAlchPrices()
     {
+        migrateHistoryToCanonicalIds();
         boolean changed = false;
         synchronized (historyLock)
         {
@@ -422,7 +546,7 @@ public class DropTrackerPlugin extends Plugin
         return left > Long.MAX_VALUE / right ? Long.MAX_VALUE : left * right;
     }
 
-    private static Map<Integer, Integer> inventoryCounts(ItemContainer container)
+    private Map<Integer, Integer> inventoryCounts(ItemContainer container)
     {
         Map<Integer, Integer> counts = new HashMap<>();
         if (container == null || container.getItems() == null)
@@ -435,7 +559,7 @@ public class DropTrackerPlugin extends Plugin
             {
                 continue;
             }
-            counts.merge(item.getId(), item.getQuantity(), (left, right) -> {
+            counts.merge(canonicalItemId(item.getId()), item.getQuantity(), (left, right) -> {
                 long total = (long) left + right;
                 return total > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) total;
             });
